@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Twitch Danmaku Overlay</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;700&display=swap');
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: transparent;
+      width: 100%;
+      height: 100%;
+      font-family: 'Inter', sans-serif;
+    }
+    #danmaku-container {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    }
+    .danmaku {
+      position: absolute;
+      white-space: nowrap;
+      font-size: 28px;
+      font-weight: 600;
+      color: #ffffff;
+      text-shadow:
+        0 0 4px rgba(0, 0, 0, 0.6),
+        0 0 8px rgba(0, 0, 0, 0.4);
+      animation-name: fly;
+      animation-timing-function: linear;
+      animation-fill-mode: forwards;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      line-height: 1.4;
+    }
+    .username {
+      margin-right: 6px;
+    }
+    img.emote {
+      height: 28px;
+      vertical-align: middle;
+    }
+    @keyframes fly {
+      from { transform: translateX(100vw); }
+      to   { transform: translateX(-100vw); }
+    }
+  </style>
+</head>
+<body>
+  <div id="danmaku-container"></div>
+  <script>
+    // Получение параметров из URL
+    const params = new URLSearchParams(window.location.search);
+    const CHANNEL = params.get("channel") || "aivamorn";
+    const rect = params.get("rect")?.split(",").map(Number) || [10, 90]; // vh
+
+    const container = document.getElementById("danmaku-container");
+
+    const emoteURL = id => `https://static-cdn.jtvnw.net/emoticons/v2/${id}/default/dark/3.0`;
+
+    function parseTags(tagString) {
+      const tags = {};
+      tagString.split(';').forEach(tag => {
+        const [key, value] = tag.split('=');
+        tags[key] = value;
+      });
+      return tags;
+    }
+
+    function applyEmotes(message, emotesTag) {
+      if (!emotesTag) return [document.createTextNode(message)];
+      const parts = [];
+      const emoteMap = [];
+
+      emotesTag.split('/').forEach(e => {
+        const [id, positions] = e.split(':');
+        positions.split(',').forEach(pos => {
+          const [start, end] = pos.split('-').map(Number);
+          emoteMap.push({ start, end, id });
+        });
+      });
+
+      emoteMap.sort((a, b) => a.start - b.start);
+
+      let lastIndex = 0;
+      emoteMap.forEach(({ start, end, id }) => {
+        if (start > lastIndex) {
+          parts.push(document.createTextNode(message.slice(lastIndex, start)));
+        }
+        const img = document.createElement("img");
+        img.src = emoteURL(id);
+        img.className = "emote";
+        img.alt = message.slice(start, end + 1);
+        parts.push(img);
+        lastIndex = end + 1;
+      });
+
+      if (lastIndex < message.length) {
+        parts.push(document.createTextNode(message.slice(lastIndex)));
+      }
+
+      return parts;
+    }
+
+    function spawnDanmaku(user, color, message, emotes) {
+    const el = document.createElement("div");
+    el.className = "danmaku";
+
+    const [minY, maxY] = rect;
+    const top = Math.random() * (maxY - minY) + minY;
+    el.style.top = `${top}vh`;
+
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "username";
+    nameSpan.style.color = color || "#ffffff";
+    nameSpan.textContent = `${user}:`;
+
+    el.appendChild(nameSpan);
+    applyEmotes(message, emotes).forEach(p => el.appendChild(p));
+    container.appendChild(el);
+
+    // Дождаться отрисовки DOM, чтобы измерить ширину
+    requestAnimationFrame(() => {
+        const totalWidth = el.offsetWidth;
+        const screenWidth = window.innerWidth;
+
+        const speed = 150; // px/sec — скорость текста (можно регулировать)
+        const duration = (screenWidth + totalWidth) / speed;
+
+        el.style.animationDuration = `${duration}s`;
+
+        setTimeout(() => el.remove(), duration * 1000);
+    });
+    }
+
+    function connectTwitch() {
+      const ws = new WebSocket("wss://irc-ws.chat.twitch.tv:443");
+
+      ws.onopen = () => {
+        ws.send("CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership");
+        ws.send("PASS SCHMOOPIIE");
+        ws.send("NICK justinfan" + Math.floor(Math.random() * 100000));
+        ws.send("JOIN #" + CHANNEL);
+      };
+
+      ws.onmessage = (event) => {
+        const lines = event.data.split("\r\n");
+        lines.forEach(line => {
+          if (line.startsWith("PING")) {
+            ws.send("PONG :tmi.twitch.tv");
+            return;
+          }
+
+          const tagMatch = line.match(/^@([^ ]+) :(.*)$/);
+          if (!tagMatch) return;
+
+          const tags = parseTags(tagMatch[1]);
+          const contentMatch = tagMatch[2].match(/(.+?)!.+? PRIVMSG #.+? :(.*)/);
+          if (!contentMatch) return;
+
+          const displayName = tags["display-name"] || contentMatch[1];
+          const color = tags["color"] || "#ffffff";
+          const message = contentMatch[2];
+          const emotes = tags["emotes"] || "";
+
+          spawnDanmaku(displayName, color, message, emotes);
+        });
+      };
+    }
+
+    connectTwitch();
+  </script>
+</body>
+</html>
